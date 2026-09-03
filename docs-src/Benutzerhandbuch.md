@@ -75,7 +75,7 @@ als Kacheln:
 
 ```
 RESET   REBOOT   MENU    POWER   CPU
-RFID    SD       STATUS  SETUP
+JOY     RFID     SD      STATUS  SETUP
 ```
 
 Mit **A** und **C** wählst du eine Kachel aus (sie wird hell umrandet), mit **B**
@@ -88,6 +88,7 @@ löst du sie aus.
 | **MENU** | Öffnet oder schließt das Ultimate-Menü am C64 |
 | **POWER** | Schaltet den C64 aus – zur Sicherheit zweimal drücken |
 | **CPU** | CPU-Geschwindigkeit ansehen und ändern |
+| **JOY** | Joystickports am C64 tauschen (Normal ↔ Swapped) |
 | **RFID** | Karte auflegen und das darauf gespeicherte Spiel starten |
 | **SD** | Ein Spiel direkt von der SD-Karte auswählen und starten |
 | **STATUS** | Ausführliche Verbindungsinfos, Verbindungstest mit B |
@@ -103,6 +104,23 @@ Kachel **CPU** wählen und mit **B** öffnen. Oben steht die aktuelle
 Geschwindigkeit, darunter die Auswahlliste. Mit **A**/**C** die gewünschte
 Geschwindigkeit wählen, mit **B** setzen. Der Core liest die verfügbaren Stufen
 direkt vom C64 aus, du bekommst also genau die Werte, die dein Gerät kann.
+
+# Joystickports tauschen
+
+Manche Spiele erwarten den Joystick in Port 1, andere in Port 2. Statt das Kabel
+umzustecken, lässt sich die Belegung im C64 vertauschen.
+
+Kachel **JOY** wählen und mit **B** auslösen – jedes Auslösen schaltet zwischen *Normal* und
+*Swapped* hin und her, kurz erscheint *JOY Swapped* bzw. *JOY Normal*.
+
+Unter *SETUP → Joystick* steht der aktuelle Stand, und dort schaltest du durch
+alle Werte, die dein C64 anbietet: neben *Normal* und *Swapped* je nach Firmware
+auch *WASD P1* und *WASD P2* – dann steuert die Tastatur den jeweiligen Port.
+
+Einen eigenen Fernsteuerbefehl gibt es dafür in der Ultimate-Firmware nicht. Der
+Core setzt die Einstellung *Joystick Swapper* in der C64-Konfiguration, genau wie
+bei der CPU-Geschwindigkeit. Der Stand bleibt deshalb erhalten, bis er wieder
+geändert wird – auch über einen Reset hinweg.
 
 # Spiele per Karte starten (RFID)
 
@@ -173,13 +191,16 @@ tragen. Aufgelegt löst sie ihn sofort aus, ganz ohne Menü und ohne SD-Karte.
 | **PowerOff direkt** | Schaltet sofort aus |
 | **PowerOff mit Abfrage** | Fragt nach – zum Bestätigen die Karte innerhalb des Zeitfensters ein zweites Mal auflegen |
 | **CPU x MHz** | Stellt die CPU auf den auf der Karte hinterlegten Wert |
+| **Joystick tauschen** | Vertauscht die Joystickports (Normal ↔ Swapped) |
+| **Joystick Normal / Swapped / WASD P1 / WASD P2** | Setzt die Portbelegung fest auf diesen Wert |
 
 ## Eine Befehlskarte anlegen
 
 1. **NFC-Cmd** in den Einstellungen wählen.
 2. Aus der Liste den gewünschten Befehl aussuchen. Nach den festen Einträgen
-   folgen alle CPU-Stufen, die dein C64 anbietet – eine Karte „CPU 10 MHz" ist
-   also ein einziger Klick.
+   folgen erst die Joystick-Belegungen, dann alle CPU-Stufen, die dein C64
+   anbietet – eine Karte „CPU 10 MHz" ist also ein einziger Klick. Rechts steht
+   *JOY* oder *CPU*, damit du die beiden Blöcke auseinanderhältst.
 3. Karte auflegen, *KARTE OK* bedeutet: geschrieben und geprüft.
 
 ## PowerOff mit Abfrage
@@ -207,6 +228,8 @@ CMD:MENU
 CMD:POWEROFF=0      sofort ausschalten
 CMD:POWEROFF=8      nachfragen, 8 Sekunden Zeit
 CMD:CPU=10          CPU auf 10 MHz
+CMD:JOY             Joystickports umschalten
+CMD:JOY=SWAPPED     Ports fest setzen; auch NORMAL, WASD1, WASD2
 ```
 
 Groß- und Kleinschreibung sind egal. Dasselbe Format verstehen die M5Dial- und
@@ -409,6 +432,7 @@ Machst du nichts, läuft nach kurzer Zeit die Aktion von „B lang".
 |---|---|
 | **Disk Action** | Nach dem Einlegen eines Disk-Abbilds: nur einlegen (Mount), einlegen + Reset, oder einlegen + erstes Programm starten |
 | **Disk Drive** | Ziellaufwerk: Auto (Bus 8), oder fest A / B |
+| **Joystick** | Portbelegung im C64: *Normal*, *Swapped*, je nach Firmware *WASD P1* / *WASD P2* |
 
 ## Sonstiges
 
