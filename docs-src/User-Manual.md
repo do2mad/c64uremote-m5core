@@ -471,6 +471,13 @@ nothing, the "B long" action runs after a short delay.
 
 # Frequently asked questions
 
+**Now and then *Not reached* or *Not verified* shows up and clears again.**
+The HTTP server in the c64u occasionally refuses a connection ("connection
+refused") although network and address are fine – this happens even with only a
+single device on the network. Since v1.2.1 the firmware retries a refused call
+by itself after a short pause, so you will usually not notice. If it stays that
+way, restarting the c64u helps.
+
 **The Core shows "NO WIFI".** Check that the Wi-Fi name and password are stored
 correctly and the router is in range. The Core retries the connection every few
 seconds.
