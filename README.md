@@ -166,6 +166,18 @@ Statusleiste links: Punkt + Text zeigen den Gesamtzustand –
 fehlgeschlagen · **grün** alles OK. (Der Core hat keine RGB-LED wie der
 MiniJoyC, deshalb wandert diese Anzeige ins Display.)
 
+**Akkuanzeige** (seit v1.2.0): Der Strich unter der Statusleiste ist zugleich
+der Füllstandsbalken – der gefüllte Teil ist zwei Pixel hoch und farbig.
+Rechts außen wechseln sich alle 15 s (`kBarSwapMs`) `RFID`/`SD` und ein
+Akkusymbol mit der Prozentzahl ab; am Strom steht ein Blitz davor. Farben
+über `kBattGreen` / `kBattYellow` / `kBattBlinkAt`, am Ladekabel türkis und
+ohne Blinken. Beim Core meldet der Lade-IC (IP5306) nur Viertel – 0, 25, 50, 75, 100 % – und
+kennt die USB-Spannung nicht; der Blitz erscheint dort deshalb nur, solange
+wirklich geladen wird.
+
+Der Ladestand wird höchstens alle 5 s vom
+Lade-IC gelesen (`kBattPollMs`); auf der Status-Seite steht er als Zahl.
+
 ### Einstellungen
 
 | Punkt | Werte |

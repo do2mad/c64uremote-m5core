@@ -98,6 +98,36 @@ löst du sie aus.
 zuerst die Abfrage *POWER OFF? NOCHMAL!*. Erst ein zweiter Druck auf **B**
 innerhalb des Zeitfensters schaltet wirklich aus.
 
+# Die Akkuanzeige
+
+Der Core hat einen eingebauten Akku. Wie voll er ist, siehst du in der
+Statusleiste an zwei Stellen.
+
+**Der Strich unter der Statusleiste** ist zugleich der Füllstandsbalken: der
+gefüllte Teil ist etwas dicker und farbig, der Rest bleibt die gedämpfte Linie.
+
+**Rechts außen** wechseln sich alle 15 Sekunden zwei Anzeigen ab – einmal
+`RFID` und `SD` wie gewohnt, einmal ein Akkusymbol mit der Prozentzahl darin.
+
+Die Farbe bedeutet an beiden Stellen dasselbe:
+
+| Farbe | Ladestand |
+|---|---|
+| grün | ab 50 % |
+| gelb | ab 25 % |
+| rot, blinkend | darunter |
+| türkis | am Ladekabel |
+
+Wird der Akku geladen, steht ein kleiner **Blitz** vor dem Akkusymbol. Ist der
+Akku voll, meldet der Lade-IC des Core kein Laden mehr und der Blitz
+verschwindet, auch wenn das Kabel noch steckt – mehr gibt der Baustein nicht her.
+
+Der Lade-IC des Core meldet den Stand nur in Vierteln: 0, 25, 50, 75 oder
+100 %. Zwischenwerte gibt es nicht, und feinere Farbgrenzen als 25 % sind
+deshalb auch nicht möglich.
+
+Auf der **Status-Seite** steht der Ladestand zusätzlich als Zahl.
+
 # CPU-Geschwindigkeit ändern
 
 Kachel **CPU** wählen und mit **B** öffnen. Oben steht die aktuelle

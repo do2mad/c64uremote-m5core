@@ -98,6 +98,37 @@ trigger it.
 prompt *POWER OFF? NOCHMAL!* ("again!") appears first. Only a second press of
 **B** within the time window actually powers off.
 
+# The battery indicator
+
+The Core has a built-in battery. How full it is can be seen in two places in the
+status bar.
+
+**The line below the status bar** doubles as the level gauge: the filled part is
+slightly thicker and coloured, the rest stays the dimmed line.
+
+**At the right-hand end** two displays take turns every 15 seconds – `RFID` and
+`SD` as before, and a battery symbol with the percentage inside.
+
+The colour means the same in both places:
+
+| Colour | Level |
+|---|---|
+| green | from 50 % |
+| yellow | from 25 % |
+| red, blinking | below that |
+| turquoise | on the charger |
+
+While the battery is charging a small **bolt** sits in front of the battery
+symbol. Once the battery is full the Core's charge controller no longer reports
+charging and the bolt disappears, even with the cable still plugged in – the
+chip cannot tell more.
+
+The Core's charge controller reports the level only in quarters: 0, 25, 50, 75
+or 100 %. There are no values in between, and finer colour thresholds than
+25 % are therefore not possible either.
+
+The **status page** shows the level as a number as well.
+
 # Changing the CPU speed
 
 Select the **CPU** tile and open it with **B**. The current speed is shown at the
