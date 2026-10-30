@@ -2,6 +2,27 @@
 
 C64uRemote für den **M5Stack Core**. Neueste Version zuerst.
 
+## v1.5.1 – 2026-10-30
+
+### Deutsch
+
+**Hinweiskasten flackert nicht mehr.** Meldungen wie „1 MHZ“ nach dem
+CPU-Umschalten oder „LAEUFT: …“ nach dem Start eines Programms wurden bisher
+rund 30-mal pro Sekunde neu gezeichnet; auf dem Hauptbildschirm übermalte die
+Logo-Animation den Kasten dazwischen jedes Mal. Besonders am M5Stack Fire war
+das als Flackern deutlich zu sehen. Jetzt wird der Kasten nur gezeichnet, wenn
+er erscheint oder sich ändert, und die Animation spart seinen Bereich aus,
+solange er sichtbar ist.
+
+### English
+
+**The message box no longer flickers.** Messages such as "1 MHZ" after
+switching the CPU or "RUNNING: …" after starting a program used to be redrawn
+about 30 times a second; on the home screen the logo animation painted over the
+box in between every time. On the M5Stack Fire in particular this was clearly
+visible as flicker. The box is now only drawn when it appears or changes, and
+the animation leaves its area out while it is visible.
+
 ## v1.5.0 – 2026-10-18
 
 ### Deutsch

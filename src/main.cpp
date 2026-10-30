@@ -77,8 +77,8 @@ namespace {
 // Firmware-Stand. Bei jeder neuen Version mitpflegen - steht auf der
 // Statusseite und im Startprotokoll und gehoert zum Eintrag im CHANGELOG.
 // ---------------------------------------------------------------------------
-constexpr const char* kFwVersion = "1.5.0";
-constexpr const char* kFwDate    = "2026-10-18";
+constexpr const char* kFwVersion = "1.5.1";
+constexpr const char* kFwDate    = "2026-10-30";
 
 // ---------------------------------------------------------------------------
 // Zeiten und Grenzwerte
@@ -216,6 +216,13 @@ constexpr int kTileH     = 30;
 constexpr int kTileW     = 56;
 constexpr int kTileGap   = 6;
 constexpr int kHintY     = 217;
+// Hinweiskasten (setModal). Die Effekte sparen diesen Bereich aus, solange
+// der Kasten sichtbar ist - sonst wuerde er 30x pro Sekunde uebermalt und
+// neu gezeichnet und flackert sichtbar (v. a. am Fire).
+constexpr int kModalBoxW = 260;
+constexpr int kModalBoxH = 74;
+constexpr int kModalBoxX = (kScrW - kModalBoxW) / 2;
+constexpr int kModalBoxY = 62;
 
 // Ableitung fuer die hoehenrichtige Logo-Skalierung
 constexpr int kLogoDrawW = (kLogoH * kLogoSrcW) / kLogoSrcH;
@@ -521,6 +528,7 @@ struct AppState {
   uint16_t modalColor   = TFT_WHITE;
   uint32_t modalUntilMs = 0;
   bool     modalVisibleLast = false;
+  bool     modalNeedsDraw   = false;   // Kasten neu zeichnen (Text/Farbe neu)
 
   // ---- Timing ----
   uint32_t lastWiFiAttemptMs     = 0;
@@ -749,6 +757,7 @@ void setModal(const String& text, uint16_t color, uint32_t now, uint32_t duratio
   app.modalText    = text;
   app.modalColor   = color;
   app.modalUntilMs = now + durationMs;
+  app.modalNeedsDraw = true;
   app.home.dirty   = true;
   app.screenDirty  = true;
 }
@@ -1047,6 +1056,19 @@ inline int wrapCoord(int value, int limit) {
 
 // Schiebt eine fertige Bildzeile ins Display. Bei "Half"-Detail werden die
 // berechneten Pixel horizontal verdoppelt und die Zeile zweimal ausgegeben.
+// true, solange der Hinweiskasten ueber dem Logo steht.
+bool gLogoClipModal = false;
+
+inline void pushLogoLine(int screenY) {
+  if (gLogoClipModal && screenY >= kModalBoxY && screenY < kModalBoxY + kModalBoxH) {
+    const int rightX = kModalBoxX + kModalBoxW;
+    M5.Display.pushImage(0, screenY, kModalBoxX, 1, rowBuf);
+    M5.Display.pushImage(rightX, screenY, kScrW - rightX, 1, rowBuf + rightX);
+  } else {
+    M5.Display.pushImage(0, screenY, kScrW, 1, rowBuf);
+  }
+}
+
 inline void pushLogoRow(int y, int step) {
   if (step > 1) {
     for (int x = 0; x < kScrW; x += step) {
@@ -1055,7 +1077,7 @@ inline void pushLogoRow(int y, int step) {
     }
   }
   for (int k = 0; k < step && y + k < kLogoH; ++k) {
-    M5.Display.pushImage(0, kLogoY + y + k, kScrW, 1, rowBuf);
+    pushLogoLine(kLogoY + y + k);
   }
 }
 
@@ -1065,7 +1087,7 @@ void drawStaticLogo() {
   M5.Display.startWrite();
   for (int y = 0; y < kLogoH; ++y) {
     for (int x = 0; x < kScrW; ++x) rowBuf[x] = logoPixel(x, y);
-    M5.Display.pushImage(0, kLogoY + y, kScrW, 1, rowBuf);
+    pushLogoLine(kLogoY + y);
   }
   M5.Display.endWrite();
 }
@@ -1220,7 +1242,7 @@ void drawRasterBars(uint32_t tickMs) {
         rowBuf[innerX + innerW - 1] = rgb565(132, 170, 255);
       }
     }
-    M5.Display.pushImage(0, kLogoY + y, kScrW, 1, rowBuf);
+    pushLogoLine(kLogoY + y);
   }
   M5.Display.endWrite();
 }
@@ -5450,10 +5472,10 @@ void drawTiles() {
 void drawModalOverlay(uint32_t now) {
   if (!modalVisible(now)) return;
 
-  const int boxW = 260;
-  const int boxH = 74;
-  const int x = (kScrW - boxW) / 2;
-  const int y = 62;
+  const int boxW = kModalBoxW;
+  const int boxH = kModalBoxH;
+  const int x = kModalBoxX;
+  const int y = kModalBoxY;
 
   M5.Display.fillRoundRect(x, y, boxW, boxH, 10, rgb565(6, 10, 18));
   M5.Display.drawRoundRect(x, y, boxW, boxH, 10, app.modalColor);
@@ -6083,21 +6105,31 @@ void render(uint32_t now) {
       app.home.dirty  = true;
     }
 
+    // Steht der Kasten schon, sparen die Effekte seinen Bereich aus und er
+    // selbst wird nur gezeichnet, wenn er neu ist oder sich geaendert hat.
+    const bool drawModal = modalNow && (app.modalNeedsDraw || !app.modalVisibleLast);
+    gLogoClipModal = modalNow && !drawModal;
     if (animated) {
       drawHomeVisual(now);
-      if (modalNow) drawModalOverlay(now);
+      if (drawModal) drawModalOverlay(now);
     } else if (app.home.dirty || modalNow != app.modalVisibleLast) {
       drawHomeVisual(now);
-      if (modalNow) drawModalOverlay(now);
+      if (drawModal) drawModalOverlay(now);
       app.home.dirty = false;
     }
+    if (drawModal) app.modalNeedsDraw = false;
+    gLogoClipModal = false;
   } else {
     if (app.screenDirty) {
       drawFullScreenFor(app.screen);
       app.screenDirty = false;
+      app.modalNeedsDraw = true;   // Seite ist neu - Kasten wieder drauf
     }
     if (modalNow) {
-      drawModalOverlay(now);
+      if (app.modalNeedsDraw || !app.modalVisibleLast) {
+        drawModalOverlay(now);
+        app.modalNeedsDraw = false;
+      }
     } else if (app.modalVisibleLast) {
       app.screenDirty = true;      // Overlay wieder wegputzen
     }
