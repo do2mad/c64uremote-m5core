@@ -77,8 +77,8 @@ namespace {
 // Firmware-Stand. Bei jeder neuen Version mitpflegen - steht auf der
 // Statusseite und im Startprotokoll und gehoert zum Eintrag im CHANGELOG.
 // ---------------------------------------------------------------------------
-constexpr const char* kFwVersion = "1.5.1";
-constexpr const char* kFwDate    = "2026-10-30";
+constexpr const char* kFwVersion = "1.6.0";
+constexpr const char* kFwDate    = "2026-11-19";
 
 // ---------------------------------------------------------------------------
 // Zeiten und Grenzwerte
@@ -618,6 +618,20 @@ WifiProfile gWifiProfiles[kWifiProfileMax];
 size_t      gWifiCount = 0;
 size_t      gWifiTry   = 0;      // Profil fuer den naechsten Verbindungsversuch
 String      gTargetHost;
+// Wake on LAN: WLAN-MAC des c64u ("AA:BB:CC:DD:EE:FF", leer = unbekannt).
+// Wird beim Verbinden aus /v1/info gelernt oder kommt aus der wifi.txt.
+String      gC64Mac;
+bool        gWolMissing      = false;   // c64u zuletzt nicht erreicht
+uint32_t    gWolMissingSince = 0;       // seit wann er fehlt
+bool        gWolOffered      = false;   // Rueckfrage fuer diesen Ausfall schon gezeigt
+bool        gWolAskOpen      = false;   // Rueckfrage "c64u wecken?" steht
+bool        gWolAskYes       = true;    // Auswahl in der Rueckfrage
+bool        gWolAskArmed     = false;   // Taste nach dem Oeffnen gedrueckt
+uint32_t    gWolAskOpenedMs  = 0;
+uint32_t    gWolAskUntilMs   = 0;       // schliesst sich von selbst
+uint32_t    gWolWakeAtMs     = 0;       // Zeitpunkt des letzten Weckrufs
+uint8_t     gWolRecheckIdx   = 0;
+String normalizeMac(const String& text);
 String      gTargetPass;
 
 WifiScanEntry gWifiScan[kWifiScanMax];
@@ -763,7 +777,7 @@ void setModal(const String& text, uint16_t color, uint32_t now, uint32_t duratio
 }
 
 bool modalVisible(uint32_t now) {
-  return !app.modalText.isEmpty() && now <= app.modalUntilMs;
+  return gWolAskOpen || (!app.modalText.isEmpty() && now <= app.modalUntilMs);
 }
 
 // Vorwaertsdeklarationen
@@ -2104,11 +2118,269 @@ ProbeState probePoll(uint32_t now) {
   return ProbeState::Answered;
 }
 
+// ===========================================================================
+//  Wake on LAN
+// ===========================================================================
+// Ab c64u-Firmware 1.2 laesst sich der c64u ueber WLAN wecken (Einstellung
+// "Wake on LAN" in der Gruppe Power Settings). Geweckt wird per Magic Packet
+// an die WLAN-MAC - nicht an die IP-Adresse. Die MAC meldet der c64u unter
+// /v1/info als "wifi_mac"; sie wird beim Verbinden gelernt und gespeichert.
+// Fehlt der c64u eine Weile, oeffnet sich auf dem Hauptbildschirm die
+// Rueckfrage "c64u wecken?" mit NEIN/JA (A/C waehlen, B bestaetigt) - einmal
+// pro Ausfall. Die POWER-Kachel heisst dann WECKEN und oeffnet dieselbe
+// Rueckfrage. Im Direktmodus geht der Weckruf an das eigene Funknetz; gefragt
+// wird dort nur, wenn ein Geraet angemeldet ist (der schlafende c64u).
+const uint16_t kWolColOk   = kColOk;
+const uint16_t kWolColWarn = kColWarn;
+const uint16_t kWolColErr  = kColErr;
+constexpr uint32_t kWolAskDelayMs  = 5000;    // so lange muss der c64u fehlen
+constexpr uint32_t kWolAskDirectMs = 15000;   // Direktmodus: Zeit nach der Anmeldung
+constexpr uint32_t kWolAskMs       = 20000;   // Rueckfrage schliesst sich (= NEIN)
+// Nach dem Weckruf so oft nachsehen, ob der c64u da ist (ms nach dem Senden)
+constexpr uint32_t kWolRecheckMs[] = {4000, 8000, 13000, 20000, 30000, 45000};
+constexpr uint8_t  kWolRecheckCount = sizeof(kWolRecheckMs) / sizeof(kWolRecheckMs[0]);
+// Der Weckruf wird 30 s lang alle 0,7 s wiederholt (ms nach dem ersten
+// Senden). Ein schlafender c64u hoert nur in Abstaenden ins WLAN; ein
+// einzelnes Paketbuendel geht dann leicht verloren. Sobald er antwortet,
+// hoert das Wiederholen auf.
+constexpr uint32_t kWolRepeatEveryMs = 700;
+constexpr uint32_t kWolRepeatForMs   = 30000;
+uint32_t gWolLastRepeatMs = 0;
+// JA bestaetigt, aber das WLAN steht noch nicht (z. B. direkt nach dem
+// Einschalten): Der Weckruf geht raus, sobald die Verbindung da ist.
+bool     gWolWakePending   = false;
+uint32_t gWolPendingSince  = 0;
+constexpr uint32_t kWolPendingMaxMs = 60000;   // danach aufgeben
+
+int hexNibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+// Liest 12 Hex-Ziffern, Trenner (: - . Leerzeichen) sind egal.
+bool parseMac(const String& text, uint8_t out[6]) {
+  int digits = 0;
+  for (size_t i = 0; i < text.length(); ++i) {
+    const char c = text[i];
+    if (c == ':' || c == '-' || c == '.' || c == ' ') continue;
+    const int v = hexNibble(c);
+    if (v < 0 || digits >= 12) return false;
+    if (digits % 2 == 0) out[digits / 2] = static_cast<uint8_t>(v << 4);
+    else                 out[digits / 2] |= static_cast<uint8_t>(v);
+    ++digits;
+  }
+  if (digits != 12) return false;
+  bool allZero = true, allFf = true;
+  for (int i = 0; i < 6; ++i) { allZero &= (out[i] == 0); allFf &= (out[i] == 0xFF); }
+  return !allZero && !allFf;
+}
+
+String normalizeMac(const String& text) {
+  uint8_t mac[6];
+  if (!parseMac(text, mac)) return String();
+  char buf[18];
+  snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  return String(buf);
+}
+
+// Neu zeichnen, wenn sich die Rueckfrage aendert bzw. der c64u kommt oder geht.
+void wolAskRedraw()      { app.modalNeedsDraw = true; }
+void wolMissingChanged() { app.screenDirty = true; }
+
+bool wolAvailable() {
+  return netReady() && configReady() && !gC64Mac.isEmpty();
+}
+
+// Rueckfrage und WECKEN gibt es schon, bevor das WLAN steht - gesendet wird
+// dann, sobald es da ist (gWolWakePending).
+bool wolCanAsk() { return configReady() && !gC64Mac.isEmpty(); }
+
+// Solange der c64u fehlt oder (noch) nicht erreichbar ist - auch direkt nach
+// dem Einschalten -, weckt Power statt auszuschalten.
+bool wolTileWakes() { return wolCanAsk() && (gWolMissing || !app.connection.targetReachable); }
+
+// Die Rueckfrage erscheint nur auf dem Hauptbildschirm.
+bool wolAskScreen() {
+  return app.screen == ScreenMode::Home;
+}
+
+// Im Direktmodus erst fragen, wenn ein Geraet am eigenen Accesspoint
+// angemeldet ist und trotzdem eine Weile kein c64u antwortet - ein frisch
+// startender c64u braucht erst DHCP und seinen HTTP-Server.
+bool wolDirectReady(uint32_t now) {
+  static uint32_t stationSince = 0;
+  if (!gDirectMode) { stationSince = 0; return true; }
+  if (directStationCount() == 0) { stationSince = 0; return false; }
+  if (stationSince == 0) stationSince = now | 1u;
+  return now - stationSince >= kWolAskDirectMs;
+}
+
+// Magic Packet: 6x FF, dann 16x die MAC. Geht als Broadcast ins eigene Netz
+// (Port 9 und 7), dreimal - UDP kommt nicht immer an. Im Direktmodus ist das
+// eigene Netz das Funknetz des M5Stack.
+bool wolSendMagic(uint8_t rounds = 3) {
+  uint8_t mac[6];
+  if (!parseMac(gC64Mac, mac)) return false;
+  uint8_t packet[102];
+  memset(packet, 0xFF, 6);
+  for (int i = 0; i < 16; ++i) memcpy(packet + 6 + i * 6, mac, 6);
+
+  const IPAddress bcast = gDirectMode ? WiFi.softAPBroadcastIP() : WiFi.broadcastIP();
+  const IPAddress targets[2] = {bcast, IPAddress(255, 255, 255, 255)};
+  const uint16_t  ports[2]   = {9, 7};
+  WiFiUDP udp;
+  bool sent = false;
+  for (uint8_t round = 0; round < rounds; ++round) {
+    for (const IPAddress& ip : targets) {
+      for (const uint16_t port : ports) {
+        if (!udp.beginPacket(ip, port)) continue;
+        udp.write(packet, sizeof(packet));
+        if (udp.endPacket()) sent = true;
+      }
+    }
+    if (round + 1 < rounds) delay(20);
+  }
+  udp.stop();
+  return sent;
+}
+
+void wolWake(uint32_t now) {
+  gWolOffered = true;
+  if (!netReady()) {
+    gWolWakePending  = true;
+    gWolPendingSince = now;
+    beep(1500, 40);
+    setModal("WECKRUF FOLGT, SOBALD WLAN DA", kWolColWarn, now, 3000);
+    return;
+  }
+  if (!wolSendMagic()) {
+    setModal("WECKEN FEHLGESCHLAGEN", kWolColErr, now, 2000);
+    return;
+  }
+  beep(2200, 60);
+  setModal("WECKRUF GESENDET", kWolColOk, now, 2500);
+  gWolWakeAtMs   = now;
+  gWolLastRepeatMs = now;
+  gWolRecheckIdx = 0;
+}
+
+// Rueckfrage "c64u wecken?" oeffnen. Vorauswahl JA, Druecken bestaetigt.
+void wolAskOpenNow(uint32_t now) {
+  gWolOffered     = true;          // pro Ausfall nur einmal von selbst
+  gWolAskOpen     = true;
+  gWolAskYes      = true;
+  gWolAskArmed    = false;         // erst ein neuer Tastendruck zaehlt
+  gWolAskOpenedMs = now;
+  gWolAskUntilMs  = now + kWolAskMs;
+  app.modalText   = "";
+  wolAskRedraw();
+  beep(1200, 60);
+}
+
+void wolAskAnswer(uint32_t now, bool yes) {
+  gWolAskOpen = false;
+  wolAskRedraw();
+  if (yes) wolWake(now);
+  else     beep(1500, 20);
+}
+
+// Auswahl in der Rueckfrage aendern (JA = true).
+void wolAskSelect(bool yes, uint32_t now) {
+  gWolAskUntilMs = now + kWolAskMs;
+  if (gWolAskYes == yes) return;
+  gWolAskYes = yes;
+  beep(1700, 12);
+  wolAskRedraw();
+}
+
+// Wird bei jedem fehlgeschlagenen Verbindungsversuch aufgerufen.
+void wolOnTargetMissing(uint32_t now) {
+  if (gWolMissing) return;
+  gWolMissing      = true;
+  gWolMissingSince = now;
+  wolMissingChanged();
+}
+
+// Holt die WLAN-MAC aus /v1/info (ab c64u-Firmware 1.2) und speichert sie.
+void wolLearnMac() {
+  const ApiResponse info = sendApiRequest("GET", "/v1/info", true);
+  if (!info.jsonOk) return;
+  DynamicJsonDocument doc(1024);
+  if (deserializeJson(doc, info.body) != DeserializationError::Ok) return;
+  const String mac = normalizeMac(String(doc["wifi_mac"] | ""));
+  if (mac.isEmpty() || mac == gC64Mac) return;
+  gC64Mac = mac;
+  prefs.begin("c64unet", false);
+  prefs.putString("cmac", gC64Mac);
+  prefs.end();
+}
+
+// Laeuft in jedem loop()-Durchlauf.
+void wolService(uint32_t now) {
+  // Steht die Verbindung neu, die MAC des c64u abholen.
+  static bool wasOk = false;
+  const bool ok = app.connection.wifiConnected && app.connection.authOk;
+  if (ok && !wasOk) wolLearnMac();
+  wasOk = ok;
+
+  const bool directReady = wolDirectReady(now);
+  if (app.connection.targetReachable) {
+    if (gWolMissing) { gWolMissing = false; wolMissingChanged(); }
+    gWolOffered  = false;     // beim naechsten Ausfall wieder fragen
+    gWolWakeAtMs = 0;
+    gWolWakePending = false;
+    if (gWolAskOpen) { gWolAskOpen = false; wolAskRedraw(); }     // er ist von selbst gekommen
+  }
+
+  // Vorgemerkten Weckruf senden, sobald das WLAN steht.
+  if (gWolWakePending) {
+    if (netReady()) {
+      gWolWakePending = false;
+      wolWake(now);
+    } else if (now - gWolPendingSince >= kWolPendingMaxMs) {
+      gWolWakePending = false;
+    }
+  }
+
+  if (gWolAskOpen) {
+    if (!wolCanAsk() || !wolAskScreen() ||
+        static_cast<int32_t>(now - gWolAskUntilMs) >= 0) {
+      gWolAskOpen = false;
+      wolAskRedraw();
+    }
+  } else if (gWolMissing && !gWolOffered && gWolWakeAtMs == 0 && directReady &&
+             wolAvailable() && wolAskScreen() && !modalVisible(now) &&
+             now - gWolMissingSince >= kWolAskDelayMs) {
+    wolAskOpenNow(now);
+  }
+
+  // Weckruf wiederholen, bis der c64u antwortet (siehe kWolRepeatEveryMs).
+  if (gWolWakeAtMs != 0 && !app.connection.targetReachable &&
+      now - gWolWakeAtMs < kWolRepeatForMs && now - gWolLastRepeatMs >= kWolRepeatEveryMs) {
+    gWolLastRepeatMs = now;
+    wolSendMagic(1);
+  }
+
+  // Nach dem Weckruf in kurzen Abstaenden anklopfen statt alle 15 s.
+  if (gWolWakeAtMs != 0) {
+    if (gWolRecheckIdx >= kWolRecheckCount) {
+      gWolWakeAtMs = 0;
+    } else if (now - gWolWakeAtMs >= kWolRecheckMs[gWolRecheckIdx]) {
+      ++gWolRecheckIdx;
+      if (gProbeFd < 0) app.lastConnectionProbeMs = 0;
+    }
+  }
+}
+
 void markTargetMissing() {
   app.connection.targetReachable = false;
   app.connection.authOk          = false;
   app.connection.detail          = "Target unreachable";
   directNextCandidate();
+  wolOnTargetMissing(millis());
 }
 
 // Entscheidet, ob die (blockierende) HTTP-Statusabfrage jetzt laufen soll.
@@ -2159,6 +2431,9 @@ void refreshConnectionStatus(uint32_t now, bool force = false) {
     app.connection.targetReachable = false;
     app.connection.authOk          = false;
     app.connection.detail          = "Direkt: c64u nicht angemeldet";
+    // Ist der c64u ausgeschaltet, meldet er sich ab - er fehlt dann, und
+    // POWER weckt statt auszuschalten.
+    wolOnTargetMissing(now);
   } else if (!configReady()) {
     app.connection.targetReachable = false;
     app.connection.authOk          = false;
@@ -2181,6 +2456,7 @@ void refreshConnectionStatus(uint32_t now, bool force = false) {
     if (!reach.transportOk) {
       app.connection.authOk = false;
       app.connection.detail = reach.errors.isEmpty() ? "Target unreachable" : reach.errors;
+      wolOnTargetMissing(now);
       directNextCandidate();                 // im Direktmodus naechste Adresse probieren
     } else if (gDirectMode && !looksLikeC64u) {
       // Im Direktnetz hat zwar jemand geantwortet, aber kein c64u - weitersuchen.
@@ -2249,6 +2525,12 @@ void performPowerOff(uint32_t now) {
 }
 
 void requestPowerOff(uint32_t now) {
+  // Ohne erreichbaren c64u gibt es nichts auszuschalten.
+  if (!app.connection.targetReachable) {
+    app.pendingPowerOff = false;
+    setModal("c64u NICHT ERREICHBAR", kColErr, now, 2000);
+    return;
+  }
   if (app.pendingPowerOff && (now - app.pendingPowerOffAtMs <= powerOffConfirmMs())) {
     performPowerOff(now);
     return;
@@ -2898,6 +3180,7 @@ void saveNetConfig() {
   prefs.putString("dssid", gDirectSsid);
   prefs.putString("dpass", gDirectPass);
   prefs.putString("dnet",  gDirectNet);
+  prefs.putString("cmac",  gC64Mac);
   prefs.end();
 }
 
@@ -2924,6 +3207,7 @@ void loadNetConfig() {
   gDirectSsid = prefs.getString("dssid", kDirectSsidDef);
   gDirectPass = prefs.getString("dpass", kDirectPassDef);
   gDirectNet  = prefs.getString("dnet",  kDirectNetDef);
+  gC64Mac     = normalizeMac(prefs.getString("cmac", ""));
   prefs.end();
 
   // Unbrauchbare Werte des Direktnetzes durch die Vorgaben ersetzen. WPA2
@@ -3207,6 +3491,10 @@ size_t loadWifiFromSd(String* errorOut) {
     if (key == "ssid")                              { flush(); ssid = value; }
     else if (key == "pass" || key == "password")    { pass = value; }
     else if (key == "host")                         { if (!value.isEmpty()) gTargetHost = value; }
+    else if (key == "mac" || key == "c64u_mac" || key == "wol_mac") {
+      const String mac = normalizeMac(value);
+      if (!mac.isEmpty()) gC64Mac = mac;
+    }
     else if (key == "hostpass" || key == "hostpassword") { gTargetPass = value; }
     else if (key == "direct") {
       String v = value;
@@ -5459,18 +5747,56 @@ void drawTiles() {
       border = selected ? kColWarn : rgb565(120, 80, 40);
       if (app.pendingPowerOff) fill = rgb565(140, 70, 30);
     }
+    const bool wakeTile = (i == kTilePowerOff && wolTileWakes());
+    if (wakeTile) border = selected ? kColInfo : rgb565(40, 100, 130);
     if (i == kTileRfidRun && !app.rfidReady) text = kColLine;
     if (i == kTileSdBrowse && !app.sdReady) text = kColLine;
 
     M5.Display.fillRoundRect(x, y, kTileW, kTileH, 6, fill);
     M5.Display.drawRoundRect(x, y, kTileW, kTileH, 6, border);
     fontSmall(); 
-    drawClipped(kTileLabels[i], x + kTileW / 2, y + kTileH / 2, kTileW - 6, text, middle_center);
+    drawClipped(wakeTile ? "WECKEN" : kTileLabels[i], x + kTileW / 2, y + kTileH / 2, kTileW - 6, text, middle_center);
   }
+}
+
+// Rueckfrage "c64u wecken?" im Kasten des Modals. Die gewaehlte Taste ist
+// farbig gefuellt (JA gruen, NEIN rot), darunter steht, was OK ausloest.
+constexpr int kWolBtnW  = 100;
+constexpr int kWolBtnH  = 26;
+constexpr int kWolBtnY  = kModalBoxY + 24;
+constexpr int kWolBtnNoX  = kScrW / 2 - 8 - kWolBtnW;
+constexpr int kWolBtnYesX = kScrW / 2 + 8;
+
+void drawWolAskButton(int x, const char* label, bool selected, uint16_t color) {
+  M5.Display.fillRoundRect(x, kWolBtnY, kWolBtnW, kWolBtnH, 6, selected ? color : kColPanel);
+  M5.Display.drawRoundRect(x, kWolBtnY, kWolBtnW, kWolBtnH, 6, selected ? TFT_WHITE : kColLine);
+  if (selected) M5.Display.drawRoundRect(x + 1, kWolBtnY + 1, kWolBtnW - 2, kWolBtnH - 2, 5, TFT_WHITE);
+  fontText();
+  drawClipped(label, x + kWolBtnW / 2, kWolBtnY + kWolBtnH / 2, kWolBtnW - 8,
+              selected ? TFT_BLACK : kColLine, middle_center);
+}
+
+void drawWolAsk() {
+  M5.Display.fillRoundRect(kModalBoxX, kModalBoxY, kModalBoxW, kModalBoxH, 10, rgb565(6, 10, 18));
+  M5.Display.drawRoundRect(kModalBoxX, kModalBoxY, kModalBoxW, kModalBoxH, 10, kWolColWarn);
+  fontText();
+  drawClipped("c64u nicht gefunden - wecken?", kScrW / 2, kModalBoxY + 12, kModalBoxW - 20, kWolColWarn, middle_center);
+  drawWolAskButton(kWolBtnNoX,  "NEIN", !gWolAskYes, kColErr);
+  drawWolAskButton(kWolBtnYesX, "JA",  gWolAskYes, kColOk);
+  fontText();
+  drawClipped(gWolAskYes ? "OK = Weckruf senden" : "OK = nicht wecken", kScrW / 2, kModalBoxY + 62,
+              kModalBoxW - 20, gWolAskYes ? kColOk : kColErr, middle_center);
+}
+
+// Hinweisleiste des Hauptbildschirms; waehrend der Rueckfrage mit A/B/C.
+void drawHomeHint() {
+  if (gWolAskOpen) drawHintBar(kArrowNone, "A NEIN", "B  OK", kArrowNone, "C JA");
+  else             drawHintBar(kArrowLeft, "", "B  OK", kArrowRight, "");
 }
 
 void drawModalOverlay(uint32_t now) {
   if (!modalVisible(now)) return;
+  if (gWolAskOpen) { drawWolAsk(); return; }
 
   const int boxW = kModalBoxW;
   const int boxH = kModalBoxH;
@@ -5580,7 +5906,8 @@ void drawStatusScreen() {
   const String hw = String("SD ") + (app.sdReady ? "ok" : "-") +
                     "   RFID " + (app.rfidReady ? "ok" : "-") +
                     "   Heap " + String(ESP.getFreeHeap() / 1024) + "k" +
-                    "   Akku " + batteryText();
+                    "   Akku " + batteryText() +
+                    "   WoL " + (gC64Mac.isEmpty() ? "-" : "ok");
   fontSmall(); 
   drawClipped(hw, 16, kListY + 7 * 22, kScrW - 32, kColLabel, top_left);
   fontSmall(); 
@@ -6063,7 +6390,7 @@ void drawFullScreenFor(ScreenMode screen) {
     case ScreenMode::Home:
       M5.Display.fillRect(0, kTileY0 - 2, kScrW, kScrH - (kTileY0 - 2), kColBg);
       drawTiles();
-      drawHintBar(kArrowLeft, "", "B  OK", kArrowRight, "");
+      drawHomeHint();
       app.home.dirty = true;
       break;
     case ScreenMode::CpuMenu:   drawCpuMenu();    break;
@@ -6100,13 +6427,19 @@ void render(uint32_t now) {
     if (app.screenDirty) {
       M5.Display.fillRect(0, kTileY0 - 2, kScrW, kScrH - (kTileY0 - 2), kColBg);
       drawTiles();
-      drawHintBar(kArrowLeft, "", "B  OK", kArrowRight, "");
+      drawHomeHint();
       app.screenDirty = false;
       app.home.dirty  = true;
     }
 
     // Steht der Kasten schon, sparen die Effekte seinen Bereich aus und er
     // selbst wird nur gezeichnet, wenn er neu ist oder sich geaendert hat.
+    static bool askHintShown = false;
+    if (askHintShown != gWolAskOpen) {
+      // Rueckfrage auf oder zu: Hinweisleiste anpassen
+      askHintShown = gWolAskOpen;
+      drawHomeHint();
+    }
     const bool drawModal = modalNow && (app.modalNeedsDraw || !app.modalVisibleLast);
     gLogoClipModal = modalNow && !drawModal;
     if (animated) {
@@ -6116,6 +6449,9 @@ void render(uint32_t now) {
       drawHomeVisual(now);
       if (drawModal) drawModalOverlay(now);
       app.home.dirty = false;
+    } else if (drawModal) {
+      // Nur der Kasten hat sich geaendert (z. B. Auswahl NEIN/JA)
+      drawModalOverlay(now);
     }
     if (drawModal) app.modalNeedsDraw = false;
     gLogoClipModal = false;
@@ -6523,6 +6859,7 @@ void activateTile(uint32_t now) {
     case kTileReboot:    performHardReset(now);  break;
     case kTileUltiMenu:  performMenuButton(now); break;
     case kTilePowerOff:
+      if (wolTileWakes()) { wolAskOpenNow(now); break; }
       requestPowerOff(now);          // Kachel fragt immer nach
       app.screenDirty = true;
       break;
@@ -7123,7 +7460,7 @@ void moveSelection(int delta) {
 
 void handleSelect(uint32_t now) {
   switch (app.screen) {
-    case ScreenMode::Home:      activateTile(now);          break;
+    case ScreenMode::Home:      activateTile(now); break;
     case ScreenMode::CpuMenu:   setCpuSpeed(app.cpuIndex, now); app.screenDirty = true; break;
     case ScreenMode::Settings:  activateSetting(now);       break;
     case ScreenMode::SdBrowser: sdBrowserSelect(now);       break;
@@ -7281,6 +7618,22 @@ void handleButtons(uint32_t now) {
   // Sonst waere man beim Schnellscrollen versehentlich im Home-Screen gelandet
   // oder haette das Tastenkuerzel von C ausgeloest.
   const bool inBrowser = (app.screen == ScreenMode::SdBrowser);
+
+  // Rueckfrage "c64u wecken?": A = NEIN, C = JA waehlen, B bestaetigt.
+  // Alles andere ruht, solange sie steht. Nur ein B nach dem Oeffnen zaehlt.
+  if (gWolAskOpen) {
+    bArmed     = false;
+    seqWaiting = false;
+    if (aPressed) { suppressA = true; wolAskSelect(false, now); }
+    if (cPressed) { suppressC = true; wolAskSelect(true, now); }
+    if (bPressed) gWolAskArmed = true;
+    if (bReleased && gWolAskArmed) {
+      suppressB = true;
+      beep(2000, 25);
+      wolAskAnswer(now, gWolAskYes);
+    }
+    return;
+  }
 
   // ---- Offene PowerOff-Abfrage eines Tastenkuerzels ------------------------
   // Diese Pruefung steht bewusst VOR der Auswertung von B: sonst wuerde die
@@ -7557,6 +7910,7 @@ void loop() {
   servicePortal(now);
   serviceWiFi(now);
   refreshConnectionStatus(now);
+  wolService(now);
 
   // Die Portalseite zeigt eine ablaufende Restzeit - einmal pro Sekunde neu
   // zeichnen reicht dafuer aus.
